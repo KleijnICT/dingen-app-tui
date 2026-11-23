@@ -1,6 +1,6 @@
 # Dingen for the terminal
 
-A native the terminal client for [Dingen](https://github.com/KleijnICT/dingen-app), a
+A terminal client for [Dingen](https://github.com/KleijnICT/dingen-app), a
 self-hosted GTD task manager. It works with any Dingen server through the
 sync protocol and keeps a local replica, so it works offline.
 
