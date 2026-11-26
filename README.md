@@ -18,7 +18,7 @@ free of terminal code.
 
 ## The core
 
-`dingen-core` passes **version 1** of the conformance test set (sync
+`dingen-core` passes **version 2** of the conformance test set (sync
 protocol 4): all 492 cases in 13 suites. A copy of the set is in
 `spec/conformance`; refresh it with `scripts/update-spec.sh` and raise
 `CONFORMANCE_VERSION` in `crates/dingen-core/src/lib.rs` when it changes.

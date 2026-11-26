@@ -16,6 +16,10 @@ pub mod order;
 pub mod record;
 pub mod repeat;
 pub mod replica;
+pub mod review;
+pub mod search;
+pub mod tag_tree;
+pub mod today;
 pub mod views;
 
 /// The sync protocol this client speaks.
@@ -23,4 +27,4 @@ pub const SYNC_PROTOCOL: u32 = 4;
 
 /// The version of the conformance test set this crate passes
 /// (`spec/conformance/manifest.json`).
-pub const CONFORMANCE_VERSION: u32 = 1;
+pub const CONFORMANCE_VERSION: u32 = 2;

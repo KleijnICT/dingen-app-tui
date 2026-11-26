@@ -4,8 +4,12 @@
 use dingen_core::actions::{self, Action, MoveTarget, Write};
 use dingen_core::model::{Account, ChecklistItem, Obj, RepeatRule, Task};
 use dingen_core::record::{apply_changes, Change, Record};
-use dingen_core::{dates, entities, hlc, misc, order, repeat, views, CONFORMANCE_VERSION, SYNC_PROTOCOL};
+use dingen_core::{
+    dates, entities, hlc, misc, order, repeat, review, search, tag_tree, today, views, CONFORMANCE_VERSION,
+    SYNC_PROTOCOL,
+};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 fn dir() -> PathBuf {
@@ -130,7 +134,16 @@ fn action(v: &Value) -> Action {
 /// The writes as the test set lists them. The order of the writes is free, so
 /// they are sorted; new ids are already `$1`, `$2`, … in order of creation.
 fn writes_json(writes: &[Write]) -> Value {
-    let mut list: Vec<Value> = writes
+    let mut list = writes_in_order(writes);
+    if let Value::Array(list) = &mut list {
+        list.sort_by_key(|w| serde_json::to_string(w).unwrap_or_default());
+    }
+    list
+}
+
+/// The writes as the cases write them, in the order they were made.
+fn writes_in_order(writes: &[Write]) -> Value {
+    let list: Vec<Value> = writes
         .iter()
         .map(|w| match w {
             Write::Create { entity_type, entity } => {
@@ -141,7 +154,6 @@ fn writes_json(writes: &[Write]) -> Value {
             }
         })
         .collect();
-    list.sort_by_key(|w| serde_json::to_string(w).unwrap_or_default());
     Value::Array(list)
 }
 
@@ -155,6 +167,18 @@ fn sorted(v: &Value) -> Value {
         .collect();
     list.sort_by_key(|w| serde_json::to_string(w).unwrap_or_default());
     Value::Array(list)
+}
+
+fn by_daypart(groups: &today::ByDaypart) -> Value {
+    json!({ "none": groups.none, "morning": groups.morning, "afternoon": groups.afternoon, "evening": groups.evening })
+}
+
+fn events(v: &Value) -> Vec<today::Event> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|e| today::Event::read(e).unwrap())
+        .collect()
 }
 
 fn run(suite: &str, op: &str, i: &Value) -> Value {
@@ -309,6 +333,7 @@ fn run(suite: &str, op: &str, i: &Value) -> Value {
             ))
         }
         ("duration", "fits") => json!(misc::duration_fits(i["duration"].as_i64(), i["max"].as_i64())),
+        ("duration", "parse") => json!(misc::parse_duration(s(&i["input"]))),
         ("tags", "normalize") => json!(misc::normalize_tag(s(&i["title"]))),
         ("tags", "same") => json!(misc::same_tag(s(&i["a"]), s(&i["b"]))),
         ("reminders", "moment") => match misc::reminder_moment(&Task::read(&object(&i["task"]))) {
@@ -360,6 +385,111 @@ fn run(suite: &str, op: &str, i: &Value) -> Value {
             );
             writes_json(&writes)
         }
+        ("review", op) => {
+            // The cases put `reviewedAt` at 12:00 UTC: its UTC date is the date everywhere.
+            let to_date = |instant: &str| instant.chars().take(10).collect::<String>();
+            let today = || s(&i["today"]);
+            match op {
+                "nextReviewOn" | "isDue" => {
+                    let item = object(&i["item"]);
+                    let next = review::next_review_on(
+                        review::reviewed_on(&item, &to_date).as_deref(),
+                        review::Every::read(&item),
+                        today(),
+                    );
+                    if op == "nextReviewOn" {
+                        json!(next)
+                    } else {
+                        let reviewable = if item.contains_key("status") {
+                            review::reviewable_project(&dingen_core::model::Project::read(&item))
+                        } else {
+                            review::reviewable_area(&dingen_core::model::Area::read(&item))
+                        };
+                        json!(reviewable && next.as_str() <= today())
+                    }
+                }
+                "queue" => json!(review::queue(&account(i), today(), &to_date)
+                    .iter()
+                    .map(|e| json!({ "kind": e.kind, "id": e.id, "nextReviewOn": e.next_review_on }))
+                    .collect::<Vec<_>>()),
+                "selectAfter" => {
+                    let queue: Vec<String> = serde_json::from_value(i["queue"].clone()).unwrap();
+                    json!(review::select_after(&queue, s(&i["id"])))
+                }
+                "age" => match review::age(opt_s(&i["reviewedAt"]).map(to_date).as_deref(), today()) {
+                    Some((n, unit)) => json!({ "n": n, "unit": unit }),
+                    None => Value::Null,
+                },
+                "openCount" => json!(review::open_count(
+                    s(&i["entry"]["kind"]),
+                    s(&i["entry"]["id"]),
+                    &account(i).tasks
+                )),
+                _ => panic!("unknown operation review/{op}"),
+            }
+        }
+        ("today", "nextWeek") => json!(today::next_week(s(&i["today"]))),
+        ("today", "tasksByDaypart") => {
+            let tasks = i["tasks"].as_array().unwrap();
+            let groups = today::tasks_by_daypart(tasks.iter().map(|t| (s(&t["id"]), opt_s(&t["daypart"]))));
+            by_daypart(&groups)
+        }
+        ("today", "eventSpan") => {
+            json!(today::event_span(&today::Event::read(&i["event"]).unwrap(), s(&i["date"])).name())
+        }
+        ("today", "eventsOnDay") => {
+            let events = events(&i["events"]);
+            json!(today::events_on_day(&events, s(&i["date"]))
+                .iter()
+                .map(|e| e.id.clone())
+                .collect::<Vec<_>>())
+        }
+        ("today", "eventsByDaypart") => {
+            by_daypart(&today::events_by_daypart(&events(&i["events"]), s(&i["date"])))
+        }
+        ("today", "newInToday") => {
+            let set_on: HashMap<String, Option<String>> = serde_json::from_value(i["setOn"].clone()).unwrap();
+            json!(today::new_in_today(
+                &account(i).tasks,
+                &set_on,
+                s(&i["today"]),
+                opt_s(&i["seen"])
+            ))
+        }
+        ("tag-tree", op) => {
+            let account = account(i);
+            let spaces: tag_tree::Spaces = serde_json::from_value(i["spaces"].clone()).unwrap_or_default();
+            let tree = |t: Vec<(String, usize)>| {
+                json!(t
+                    .iter()
+                    .map(|(id, depth)| json!({ "id": id, "depth": depth }))
+                    .collect::<Vec<_>>())
+            };
+            match op {
+                "tree" => tree(tag_tree::tree(&account.tags)),
+                "validParents" => tree(tag_tree::valid_parents(&account.tags, s(&i["tagId"]), &spaces)),
+                "nameIssue" => json!(tag_tree::name_issue(
+                    &account.tags,
+                    opt_s(&i["tagId"]),
+                    s(&i["typed"]),
+                    &spaces
+                )),
+                "openTaskCounts" => json!(tag_tree::open_task_counts(&account.tasks)),
+                "deleteTag" => writes_in_order(&tag_tree::delete_tag(
+                    &account.tasks,
+                    &account.projects,
+                    &account.tags,
+                    s(&i["tagId"]),
+                )),
+                _ => panic!("unknown operation tag-tree/{op}"),
+            }
+        }
+        ("search", "search") => json!(
+            search::search(&account(i), s(&i["query"]), int(&i["limit"]) as usize)
+                .iter()
+                .map(|h| json!({ "kind": h.kind(), "id": h.id() }))
+                .collect::<Vec<_>>()
+        ),
         _ => panic!("unknown operation {suite}/{op}"),
     }
 }

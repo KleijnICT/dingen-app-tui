@@ -35,6 +35,61 @@ pub fn format_duration(minutes: i64, hour_unit: &str) -> String {
     }
 }
 
+/// The longest duration a task can have, in minutes.
+pub const MAX_DURATION: i64 = 1440;
+
+/// A typed duration in minutes (conformance "duration", `parse`): `45`,
+/// `45m`, `45min`, `1:30`, `1u30`, `1h30`, `2u`, `1,5u`. `None` when it is
+/// not a duration from 1 to 1440 minutes.
+pub fn parse_duration(input: &str) -> Option<i64> {
+    let text: String = input
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let text = text.replacen(',', ".", 1);
+    if text.is_empty() {
+        return None;
+    }
+    let digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+    let minutes: f64 = if let Some(n) = [
+        text.strip_suffix("min"),
+        text.strip_suffix('m'),
+        Some(text.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|n| digits(n))
+    {
+        n.parse().ok()?
+    } else if let Some((h, m)) = text.split_once(':') {
+        if !digits(h) || !digits(m) || m.len() > 2 {
+            return None;
+        }
+        h.parse::<f64>().ok()? * 60.0 + m.parse::<f64>().ok()?
+    } else {
+        let at = text.find(['u', 'h'])?;
+        let (hours, rest) = (&text[..at], &text[at + 1..]);
+        let mut parts = hours.splitn(2, '.');
+        let whole = parts.next().unwrap_or("");
+        if !digits(whole) || !parts.next().is_none_or(digits) {
+            return None;
+        }
+        let rest = rest.strip_suffix('m').unwrap_or(rest);
+        let extra = if rest.is_empty() {
+            0.0
+        } else if digits(rest) && rest.len() <= 2 {
+            rest.parse().ok()?
+        } else {
+            return None;
+        };
+        hours.parse::<f64>().ok()? * 60.0 + extra
+    };
+    let rounded = minutes.round() as i64;
+    (1..=MAX_DURATION).contains(&rounded).then_some(rounded)
+}
+
 pub fn total_duration(durations: impl IntoIterator<Item = Option<i64>>) -> i64 {
     durations.into_iter().flatten().sum()
 }
