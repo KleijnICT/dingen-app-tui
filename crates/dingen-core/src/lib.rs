@@ -16,6 +16,7 @@ pub mod order;
 pub mod record;
 pub mod repeat;
 pub mod replica;
+pub mod rest;
 pub mod review;
 pub mod search;
 pub mod tag_tree;

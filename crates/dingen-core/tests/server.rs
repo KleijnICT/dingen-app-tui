@@ -94,3 +94,72 @@ fn two_devices_sync_through_the_server() {
     api.logout().unwrap();
     assert_eq!(api.me(), Err(ApiError::Unauthorized));
 }
+
+/// The endpoints besides sync (api.md), with an administrator's account.
+#[test]
+fn the_rest_endpoints_answer() {
+    let (Ok(server), Ok(email), Ok(password)) = (
+        std::env::var("DINGEN_TEST_SERVER"),
+        std::env::var("DINGEN_TEST_EMAIL"),
+        std::env::var("DINGEN_TEST_PASSWORD"),
+    ) else {
+        eprintln!("skipped: DINGEN_TEST_SERVER is not set");
+        return;
+    };
+    let anonymous = Api::new(&server, None);
+    let status = anonymous.status().expect("status");
+    assert!(status.has_users);
+    match anonymous.forgot("nobody@example.com", "en") {
+        Ok(()) => {}
+        Err(ApiError::Refused { error, .. }) => assert!(
+            ["mail_not_configured", "public_url_not_set"].contains(&error.as_str()),
+            "{error}"
+        ),
+        Err(other) => panic!("{other}"),
+    }
+
+    let api = signed_in(&server, &email, &password);
+    let me = api.me_full().expect("me");
+    assert_eq!(me["user"]["email"], json!(email));
+    api.today_seen("2026-11-26").expect("today seen");
+    assert_eq!(api.me_full().unwrap()["user"]["todaySeenOn"], json!("2026-11-26"));
+    assert_eq!(api.two_step_status().expect("two-step")["enabled"], json!(false));
+    assert!(api.calendars().expect("calendars")["calendars"].is_array());
+    let today = dates::instant_from_ms(hlc::wall_now())[0..10].to_string();
+    assert!(api.events(&today, &today).expect("events")["events"].is_array());
+
+    let made = api
+        .create_agent(&json!({ "name": "Test agent", "icon": "bot", "color": "purple", "grants": [] }))
+        .expect("an agent");
+    let id = made["agent"]["id"].as_str().unwrap().to_string();
+    assert!(made["token"].as_str().unwrap().starts_with("dgn_"));
+    api.change_agent(&id, &json!({ "name": "Renamed" }))
+        .expect("renamed");
+    assert!(api.new_agent_token(&id).expect("a new token")["token"].is_string());
+    assert!(
+        api.members().expect("members")["members"]
+            .as_array()
+            .unwrap()
+            .len()
+            >= 2
+    );
+    api.revoke_agent(&id).expect("revoked");
+    assert!(api.activity(&Default::default()).expect("activity")["items"].is_array());
+
+    if me["user"]["isAdmin"] == json!(true) {
+        let mode = api.registration().expect("registration");
+        api.set_registration(&mode).expect("registration again");
+        assert!(api.users().expect("users")["users"].is_array());
+        let invitation = api.create_invitation().expect("an invitation");
+        let token = invitation["token"].as_str().unwrap();
+        assert_eq!(anonymous.check_invite(token).expect("valid")["ok"], json!(true));
+        api.withdraw_invitation(invitation["invitation"]["id"].as_str().unwrap())
+            .expect("withdrawn");
+        assert!(api.mail().expect("mail")["configured"].is_boolean());
+    }
+    let export = api.export().expect("an export");
+    let file: serde_json::Value = serde_json::from_slice(&export).expect("JSON");
+    assert_eq!(file["format"], json!("dingen-export"));
+    let counts = api.import(&export, "merge").expect("an import");
+    assert_eq!(counts["total"]["created"], json!(0));
+}

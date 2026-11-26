@@ -19,7 +19,7 @@ free of terminal code.
 ## The core
 
 `dingen-core` passes **version 2** of the conformance test set (sync
-protocol 4): all 492 cases in 13 suites. A copy of the set is in
+protocol 4): all 616 cases in 17 suites. A copy of the set is in
 `spec/conformance`; refresh it with `scripts/update-spec.sh` and raise
 `CONFORMANCE_VERSION` in `crates/dingen-core/src/lib.rs` when it changes.
 
@@ -43,8 +43,12 @@ syncing.
 
 ## Rules
 
-- The client talks to the server only through the sync protocol (version 4)
-  and signs in with a token. There is no separate REST API.
+- Data goes only through the sync protocol (version 4). Signing in, account,
+  settings, calendars, agents, activity, administration, export and import
+  use the endpoints documented in `spec/` (protocol.md §10–11 and api.md),
+  and no others. They are in `crates/dingen-core/src/rest/`; the test
+  `tests/server.rs` calls them on a running server when `DINGEN_TEST_SERVER`
+  is set.
 - Behaviour is defined by the spec and the conformance test set in the main
   repository (`spec/protocol.md`, `spec/entities.md`,
   `spec/conformance/*.json`). Do not translate the TypeScript code by hand:

@@ -1,5 +1,5 @@
 //! The HTTP side: signing in and the sync endpoints (protocol.md, sections 7,
-//! 10 and 11).
+//! 10 and 11). The other endpoints (api.md) are in `rest`, on the same `Api`.
 
 use crate::misc::Cursor;
 use crate::SYNC_PROTOCOL;
@@ -55,7 +55,12 @@ pub struct User {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Login {
     /// Signed in; `token` is the session token to store securely.
-    SignedIn { user: User, token: String },
+    /// `recovery_codes_left` is there when a recovery code was used.
+    SignedIn {
+        user: User,
+        token: String,
+        recovery_codes_left: Option<u64>,
+    },
     /// The account has two-step verification: ask for a code.
     TwoStep { challenge: String },
 }
@@ -121,7 +126,7 @@ impl Api {
         self.token.as_deref()
     }
 
-    fn request(&self, method: &str, path: &str) -> ureq::Request {
+    pub(crate) fn request(&self, method: &str, path: &str) -> ureq::Request {
         let mut request = self
             .agent
             .request(method, &format!("{}{path}", self.base))
@@ -133,7 +138,9 @@ impl Api {
         request
     }
 
-    fn finish(result: Result<ureq::Response, ureq::Error>) -> Result<(Value, Option<String>), ApiError> {
+    pub(crate) fn finish(
+        result: Result<ureq::Response, ureq::Error>,
+    ) -> Result<(Value, Option<String>), ApiError> {
         match result {
             Ok(response) => {
                 let token = session_token(&response);
@@ -187,7 +194,7 @@ impl Api {
         })
     }
 
-    fn signed_in(&mut self, body: Value, token: Option<String>) -> Result<Login, ApiError> {
+    pub(crate) fn signed_in(&mut self, body: Value, token: Option<String>) -> Result<Login, ApiError> {
         if body.get("twoStep") == Some(&json!(true)) {
             if let Some(challenge) = body.get("challenge").and_then(Value::as_str) {
                 return Ok(Login::TwoStep {
@@ -198,7 +205,11 @@ impl Api {
         match (user(&body), token) {
             (Some(user), Some(token)) => {
                 self.token = Some(token.clone());
-                Ok(Login::SignedIn { user, token })
+                Ok(Login::SignedIn {
+                    user,
+                    token,
+                    recovery_codes_left: body.get("recoveryCodesLeft").and_then(Value::as_u64),
+                })
             }
             _ => Err(ApiError::Unreachable("the server did not start a session".into())),
         }
