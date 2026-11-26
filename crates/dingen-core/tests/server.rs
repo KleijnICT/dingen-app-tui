@@ -156,10 +156,81 @@ fn the_rest_endpoints_answer() {
         api.withdraw_invitation(invitation["invitation"]["id"].as_str().unwrap())
             .expect("withdrawn");
         assert!(api.mail().expect("mail")["configured"].is_boolean());
+        administration(&server, &api, &mode);
     }
     let export = api.export().expect("an export");
     let file: serde_json::Value = serde_json::from_slice(&export).expect("JSON");
     assert_eq!(file["format"], json!("dingen-export"));
     let counts = api.import(&export, "merge").expect("an import");
     assert_eq!(counts["total"]["created"], json!(0));
+}
+
+/// An administrator's work on another account: invite it, make and unmake
+/// it administrator, block it, a reset link, two-step off, delete it; and the
+/// back-ups when the server keeps them.
+fn administration(server: &str, api: &Api, mode: &str) {
+    api.set_registration("invite").expect("invite only");
+    let invitation = api.create_invitation().expect("an invitation");
+    let token = invitation["token"].as_str().unwrap().to_string();
+    let email = format!("invited-{}@example.com", ids::ulid().to_lowercase());
+    let mut newcomer = Api::new(server, None);
+    match newcomer.register(&email, "correct horse battery", None) {
+        Err(ApiError::Refused { error, .. }) => assert_eq!(error, "invite_required"),
+        other => panic!("{:?}", other.map(|_| ())),
+    }
+    newcomer
+        .register(&email, "correct horse battery", Some(&token))
+        .expect("registered with the invitation");
+    match Api::new(server, None).register("other@example.com", "correct horse battery", Some(&token)) {
+        Err(ApiError::Refused { error, .. }) => assert_eq!(error, "invite_used"),
+        other => panic!("{:?}", other.map(|_| ())),
+    }
+    api.set_registration(mode).expect("registration as it was");
+
+    let users = api.users().expect("users");
+    let user = users["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["email"] == json!(email))
+        .expect("the new account is listed")
+        .clone();
+    let id = user["id"].as_str().unwrap().to_string();
+    assert_eq!(user["isAdmin"], json!(false));
+    let link = api.reset_link(&id).expect("a reset link");
+    assert!(link["url"].as_str().unwrap().contains("?reset="));
+    assert_eq!(
+        api.change_user(&id, Some(true), None).unwrap()["user"]["isAdmin"],
+        json!(true)
+    );
+    let blocked = api.change_user(&id, Some(false), Some(true)).expect("blocked");
+    assert_eq!(blocked["user"]["isAdmin"], json!(false));
+    assert!(blocked["user"]["blockedAt"].is_string());
+    // A blocked account is signed out everywhere.
+    assert!(matches!(newcomer.me_full(), Err(ApiError::Unauthorized)));
+    api.disable_user_two_step(&id).expect("two-step off");
+    match api.delete_user(&id, "someone@example.com") {
+        Err(ApiError::Refused { error, .. }) => assert_eq!(error, "confirm_mismatch"),
+        other => panic!("{:?}", other.map(|_| ())),
+    }
+    let deleted = api.delete_user(&id, &email.to_uppercase()).expect("deleted");
+    assert_eq!(deleted["ok"], json!(true));
+    assert!(!api.users().unwrap()["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|u| u["email"] == json!(email)));
+
+    match api.backups() {
+        Ok(list) => {
+            assert!(list["backups"].is_array());
+            let made = api.create_backup().expect("a back-up");
+            let name = made["backup"]["name"].as_str().unwrap();
+            assert_eq!(made["backup"]["kind"], json!("manual"));
+            let file = api.download_backup(name).expect("the file");
+            assert!(file.starts_with(b"SQLite format 3"));
+        }
+        Err(ApiError::Refused { status: 404, .. }) => eprintln!("no back-ups on this server"),
+        Err(other) => panic!("{other}"),
+    }
 }
