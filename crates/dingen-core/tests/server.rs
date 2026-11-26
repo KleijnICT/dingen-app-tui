@@ -234,3 +234,25 @@ fn administration(server: &str, api: &Api, mode: &str) {
         Err(other) => panic!("{other}"),
     }
 }
+
+/// On a demo server (DINGEN_DEMO=1): the demo accounts, and signing in as
+/// one without a password.
+#[test]
+fn demo_accounts_sign_in() {
+    let Ok(server) = std::env::var("DINGEN_TEST_SERVER") else {
+        eprintln!("skipped: DINGEN_TEST_SERVER is not set");
+        return;
+    };
+    let mut api = Api::new(&server, None);
+    if !api.status().expect("status").demo {
+        eprintln!("skipped: not a demo server");
+        return;
+    }
+    let accounts = api.demo_accounts().expect("demo accounts");
+    let email = accounts["accounts"][0]["email"].as_str().unwrap().to_string();
+    match api.demo_sign_in(&email).expect("signed in") {
+        Login::SignedIn { user, .. } => assert_eq!(user.email, email),
+        Login::TwoStep { .. } => panic!("a demo account has no second step"),
+    }
+    assert_eq!(api.me().expect("the session works").email, email);
+}
