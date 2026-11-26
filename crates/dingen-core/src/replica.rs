@@ -241,6 +241,31 @@ impl Replica {
         Ok(account)
     }
 
+    /// The wall time (milliseconds) of one field's timestamp, per entity of a
+    /// type: when that field was last set. For "New in Today" (conformance
+    /// `today`, `newInToday`), which needs the day a task's `when` was set.
+    pub fn field_set_at(
+        &self,
+        entity_type: &str,
+        field: &str,
+    ) -> Result<std::collections::HashMap<String, u64>> {
+        let mut statement = self
+            .db
+            .prepare("SELECT id, field_ts FROM records WHERE entity_type = ?1")?;
+        let rows = statement.query_map(params![entity_type], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows {
+            let (id, stamps) = row?;
+            let stamps: BTreeMap<String, String> = serde_json::from_str(&stamps).unwrap_or_default();
+            if let Some((wall, _, _)) = stamps.get(field).and_then(|ts| crate::hlc::parse(ts)) {
+                out.insert(id, wall);
+            }
+        }
+        Ok(out)
+    }
+
     /// A local edit (section 8.3): every write becomes one change, applied to
     /// its record and queued in the same transaction.
     pub fn write(&mut self, writes: &[Write]) -> Result<()> {

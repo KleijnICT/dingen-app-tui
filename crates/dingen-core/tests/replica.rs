@@ -92,6 +92,9 @@ fn a_first_pull_fills_the_replica_and_stores_the_cursor() {
     assert!(report.changed);
     assert_eq!(title(&replica).as_deref(), Some("Buy milk"));
     assert_eq!(replica.cursor().unwrap().get(SPACE), Some(&7));
+    // When each field was set: the wall time of its timestamp.
+    let set = replica.field_set_at("task", "when").unwrap();
+    assert_eq!(set.get(TASK), Some(&1000));
 }
 
 #[test]
